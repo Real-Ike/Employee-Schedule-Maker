@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Employee Schedule Maker</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; background: #f4f4f9; }
+    h1 { text-align: center; }
+    .controls {
+      display: grid; grid-template-columns: repeat(4, 1fr);
+      gap: 10px; margin-bottom: 20px; align-items: center;
+    }
+    .controls input { padding: 8px; font-size: 14px; }
+    .controls button {
+      grid-column: span 4; padding: 10px; font-size: 14px;
+      cursor: pointer; border: none; border-radius: 5px;
+      background: #0077cc; color: white;
+    }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ccc; text-align: center; padding: 8px; }
+    th { background: #0077cc; color: white; }
+    .shift { background: #d9f7d9; }
+    .off { background: #e0e0e0; color: #555; font-style: italic; }
+    .edit-btn {
+      background: #ffcc00; border: none; padding: 5px 10px;
+      cursor: pointer; border-radius: 5px;
+    }
+    .delete-btn {
+      background: #ff4444; border: none; padding: 5px 10px;
+      color: white; cursor: pointer; border-radius: 5px;
+    }
+    tfoot td { font-weight: bold; background: #f0f0f0; }
+    .overlap { border: 2px solid red; }
+    .small-date { font-size: 12px; font-weight: normal; display: block; }
+    .week-nav { display: flex; justify-content: center; align-items: center; gap: 10px; margin: 10px 0 20px; }
+  </style>
+</head>
+<body>
+  <h1>Employee Schedule Maker</h1>
+
+  <!-- Week Navigation -->
+  <div class="week-nav">
+    <button onclick="changeWeek(-7)">‹ Previous Week</button>
+    <div id="weekLabel" style="font-weight:bold;"></div>
+    <button onclick="changeWeek(7)">Next Week ›</button>
+    <select id="yearSelect" onchange="jumpToYear(this.value)"></select>
+  </div>
+
+  <!-- Input Form -->
+  <div class="controls">
+    <input type="text" id="employeeName" placeholder="Employee Name">
+    <input type="text" id="monday" placeholder="Monday (9am-5pm)">
+    <input type="text" id="tuesday" placeholder="Tuesday (9am-5pm)">
+    <input type="text" id="wednesday" placeholder="Wednesday (9am-5pm)">
+    <input type="text" id="thursday" placeholder="Thursday (9am-5pm)">
+    <input type="text" id="friday" placeholder="Friday (9am-5pm)">
+    <input type="text" id="saturday" placeholder="Saturday (9am-5pm)">
+    <input type="text" id="sunday" placeholder="Sunday (9am-5pm)">
+    <button id="submitBtn" onclick="addOrUpdateEmployee()">Add Employee</button>
+  </div>
+
+  <!-- Schedule Table -->
+  <table id="scheduleTable">
+    <thead>
+      <tr id="headerRow">
+        <th>Employee</th>
+        <th>Monday</th><th>Tuesday</th><th>Wednesday</th>
+        <th>Thursday</th><th>Friday</th><th>Saturday</th><th>Sunday</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="scheduleBody"></tbody>
+    <tfoot>
+      <tr id="summaryRow">
+        <td>Totals</td>
+        <td id="mondayCount">0</td><td id="tuesdayCount">0</td><td id="wednesdayCount">0</td>
+        <td id="thursdayCount">0</td><td id="fridayCount">0</td>
+        <td id="saturdayCount">0</td><td id="sundayCount">0</td>
+        <td>-</td>
+      </tr>
+    </tfoot>
+  </table>
+
+  <!-- Export Button -->
+  <div style="margin-top: 20px; text-align: center;">
+    <button onclick="exportCSV()">Export to CSV</button>
+  </div>
+
+  <script>
+    const days = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+    let schedule = {};
+    let editEmployee = null;
+
+    // --- Time helpers (unchanged from your code) ---
+    function parseTimeToken(tok) {
+      const m = tok.match(/^(\d{1,2})(?::(\d{2}))?(am|pm)?$/i);
+      if (!m) return null;
+      let h = parseInt(m[1], 10), mm = m[2] ? parseInt(m[2], 10) : 0;
+      const ap = m[3] ? m[3].toLowerCase() : null;
+      if (ap) {
+        if (h === 12) h = (ap === 'am') ? 0 : 12;
+        else if (ap === 'pm') h += 12;
+      }
+      return h * 60 + mm;
+    }
+    function parseShift(str) {
+      const parts = str.toLowerCase().split('-');
+      if (parts.length !== 2) return null;
+      const start = parseTimeToken(parts[0]);
+      const end = parseTimeToken(parts[1]);
+      if (start == null || end == null) return null;
+      return { start, end, duration: end - start };
+    }
+    function fmtTime(totalMins) {
+      let m = ((totalMins % 1440) + 1440) % 1440;
+      let h = Math.floor(m / 60), min = m % 60;
+      const ap = h >= 12 ? 'pm' : 'am';
+      h = h % 12; if (h === 0) h = 12;
+      return `${h}${min ? ':'+String(min).padStart(2,'0') : ''}${ap}`;
+    }
+
+    // --- Validation ---
+    function validateShift(shift) {
+      if (!shift) return false;
+      if (shift.toLowerCase() === "off") return true;
+      return /^(\d{1,2}(am|pm)?)-(\d{1,2}(am|pm)?)$/i.test(shift.trim());
+    }
+
+    function addOrUpdateEmployee() {
+      const name = document.getElementById('employeeName').value.trim();
+      if (!name) { alert("Please enter employee name!"); return; }
+
+      for (const d of days) {
+        const v = document.getElementById(d.toLowerCase()).value.trim();
+        if (!v) { alert(`Please enter a shift or "off" for ${d}.`); return; }
+        if (!validateShift(v)) { alert(`Invalid format for ${d}. Use "9am-5pm" or "off".`); return; }
+      }
+
+      schedule[name] = {};
+      days.forEach(d => schedule[name][d] = document.getElementById(d.toLowerCase()).value.trim());
+
+      saveWeek(); renderTable(); clearInputs();
+    }
+
+    function clearInputs() {
+      document.getElementById('employeeName').value = "";
+      days.forEach(d => document.getElementById(d.toLowerCase()).value = "");
+      document.getElementById("submitBtn").textContent = "Add Employee";
+      editEmployee = null;
+    }
+
+    // --- Week helpers ---
+    function getMonday(date) {
+      const d = new Date(date);
+      const day = d.getDay();
+      const diff = (day === 0 ? -6 : 1) - day; // adjust to Monday
+      d.setDate(d.getDate() + diff);
+      d.setHours(0,0,0,0);
+      return d;
+    }
+    function keyFromDate(d){ return d.toISOString().slice(0,10); }
+    function formatRange(mon){
+      const end=new Date(mon); end.setDate(end.getDate()+6);
+      return mon.toLocaleDateString(undefined,{month:"short",day:"numeric"})+" - "+
+             end.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"});
+    }
+
+    const LS_WEEKS="scheduleByWeek";
+    let scheduleByWeek=JSON.parse(localStorage.getItem(LS_WEEKS)||'{}');
+    let currentMonday=getMonday(new Date());
+    let currentWeekKey=localStorage.getItem('currentWeekKey')||keyFromDate(currentMonday);
+    currentMonday=new Date(currentWeekKey);
+
+    function loadWeek(key){
+      currentWeekKey=key;
+      localStorage.setItem('currentWeekKey',key);
+      schedule=JSON.parse(JSON.stringify(scheduleByWeek[key]||{}));
+      renderTable();
+      updateWeekLabel();
+    }
+    function saveWeek(){
+      scheduleByWeek[currentWeekKey]=JSON.parse(JSON.stringify(schedule));
+      localStorage.setItem(LS_WEEKS,JSON.stringify(scheduleByWeek));
+    }
+    function changeWeek(delta){
+      const d=new Date(currentMonday);
+      d.setDate(d.getDate()+delta);
+      currentMonday=getMonday(d);
+      loadWeek(keyFromDate(currentMonday));
+    }
+    function updateWeekLabel(){
+      document.getElementById('weekLabel').textContent=`Week of ${formatRange(currentMonday)}`;
+      updateHeaderDates();
+    }
+
+    // Add correct dates under weekday headers
+    function updateHeaderDates(){
+      const headerRow = document.getElementById("headerRow");
+      days.forEach((d,i)=>{
+        const th = headerRow.children[i+1];
+        const date = new Date(currentMonday);
+        date.setDate(currentMonday.getDate()+i);
+        th.innerHTML = `${d}<span class="small-date">(${date.toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"})})</span>`;
+      });
+    }
+
+    // Jump to year
+    function jumpToYear(year){
+      const d = new Date(currentMonday);
+      d.setFullYear(parseInt(year));
+      currentMonday=getMonday(d);
+      loadWeek(keyFromDate(currentMonday));
+    }
+
+    // Populate year selector
+    // change y=now inter to add more years
+    (function populateYears(){
+      const sel=document.getElementById('yearSelect');
+      const now=new Date().getFullYear();
+      for (let y=now-2; y<=now+5; y++){
+        const opt=document.createElement('option');
+        opt.value=y; opt.textContent=y;
+        if (y===now) opt.selected=true;
+        sel.appendChild(opt);
+      }
+    })();
+
+    // --- Table rendering (unchanged except header fix) ---
+    function renderTable() {
+      const tbody = document.getElementById('scheduleBody');
+      tbody.innerHTML = "";
+      const counts = {}; days.forEach(d => counts[d]=0);
+
+      for (const emp in schedule) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${emp}</td>`;
+        days.forEach(d => {
+          const td = document.createElement('td');
+          const shift = schedule[emp][d];
+          td.textContent = shift;
+          if (shift.toLowerCase()==="off") td.classList.add("off");
+          else { td.classList.add("shift"); counts[d]++; }
+          tr.appendChild(td);
+        });
+        const act = document.createElement('td');
+        act.innerHTML = `<button class="edit-btn" onclick="editRow('${emp}')">Edit</button>
+                         <button class="delete-btn" onclick="deleteRow('${emp}')">Delete</button>`;
+        tr.appendChild(act); tbody.appendChild(tr);
+      }
+      days.forEach(d => document.getElementById(d.toLowerCase()+"Count").textContent = counts[d]);
+    }
+
+    function editRow(emp) {
+      document.getElementById('employeeName').value = emp;
+      days.forEach(d => document.getElementById(d.toLowerCase()).value = schedule[emp][d]);
+      document.getElementById("submitBtn").textContent = "Update Employee";
+      editEmployee = emp;
+    }
+    function deleteRow(emp) { delete schedule[emp]; saveWeek(); renderTable(); }
+
+    // Export
+    function exportCSV() {
+      let csv="Employee,"+days.join(",")+"\n";
+      for(const e in schedule){ const row=[e]; days.forEach(d=>row.push(schedule[e][d]||"")); csv+=row.join(",")+"\n"; }
+      const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"}),link=document.createElement("a");
+      link.href=URL.createObjectURL(blob); link.download=`Schedule_${currentWeekKey}.csv`; link.click();
+    }
+
+    // init
+    loadWeek(currentWeekKey);
+  </script>
+</body>
+</html>
